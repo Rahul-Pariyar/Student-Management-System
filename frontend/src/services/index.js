@@ -16,6 +16,7 @@ export const accountService = {
   changePassword: (data) => api.post('/accounts/change-password/', data),
   getDashboard: () => api.get('/accounts/dashboard/'),
   getTeacherDashboardStats: () => api.get('/accounts/teacher-dashboard-stats/'),
+  getSubscriptionStatus: () => api.get('/accounts/subscription-status/'),
 
   // Admin user management
   listUsers: (params) => api.get('/accounts/users/', { params }),
@@ -159,4 +160,32 @@ export const notificationService = {
   markAsRead: (id) => api.post(`/notifications/${id}/mark-read/`),
   getUnreadCount: () => api.get('/notifications/unread-count/'),
   getRecent: () => api.get('/notifications/recent/'),
+}
+
+// ── Super Admin / Tenants ────────────────────────────────────
+export const tenantService = {
+  getOverview: () => api.get('/tenants/overview/'),
+
+  // Plans
+  listPlans: () => api.get('/tenants/plans/'),
+  managePlans: () => api.get('/tenants/plans/manage/'),
+  createPlan: (data) => api.post('/tenants/plans/manage/', data),
+  updatePlan: (id, data) => api.patch(`/tenants/plans/${id}/`, data),
+
+  // Tenants
+  listTenants: (params) => api.get('/tenants/tenants/', { params }),
+  createTenant: (data) => api.post('/tenants/tenants/create/', data),
+  getTenant: (id) => api.get(`/tenants/tenants/${id}/`),
+  updateTenant: (id, data) => api.patch(`/tenants/tenants/${id}/`, data),
+  deleteTenant: (id) => api.delete(`/tenants/tenants/${id}/`),
+  suspendTenant: (id) => api.post(`/tenants/tenants/${id}/suspend/`),
+  activateTenant: (id) => api.post(`/tenants/tenants/${id}/activate/`),
+
+  // Subscriptions
+  listSubscriptions: (params) => api.get('/tenants/subscriptions/', { params }),
+  createSubscription: (data) => api.post('/tenants/subscriptions/create/', data),
+  updateSubscription: (id, data) => api.patch(`/tenants/subscriptions/${id}/`, data),
+
+  // Impersonation
+  impersonateTenant: (id) => api.post(`/tenants/tenants/${id}/impersonate/`),
 }

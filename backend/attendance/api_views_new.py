@@ -5,6 +5,7 @@ from rest_framework.views import APIView
 from django.db import transaction
 from django.db.models import Count, Q, Avg
 from django.utils import timezone
+from tenants.mixins import get_request_tenant
 
 from .models import AttendanceSession, AttendanceRecord, AttendanceSummary
 from .serializers import (
@@ -25,12 +26,15 @@ class SessionListCreate(generics.ListCreateAPIView):
 
     def get_queryset(self):
         user = self.request.user
+        tenant = get_request_tenant(self.request)
         qs = AttendanceSession.objects.select_related(
             'teacher_assignment__subject',
             'teacher_assignment__class_assigned',
             'teacher_assignment__teacher__user',
         ).order_by('-date', '-start_time')
 
+        if tenant:
+            qs = qs.filter(teacher_assignment__academic_year__tenant=tenant)
         if user.user_type == 'teacher':
             return qs.filter(teacher_assignment__teacher=user.teacher_profile)
         return qs
@@ -55,9 +59,12 @@ class RecordList(generics.ListAPIView):
 
     def get_queryset(self):
         user = self.request.user
+        tenant = get_request_tenant(self.request)
         qs = AttendanceRecord.objects.select_related(
             'session__teacher_assignment__subject', 'student__user'
         )
+        if tenant:
+            qs = qs.filter(session__teacher_assignment__academic_year__tenant=tenant)
         if user.user_type == 'student':
             return qs.filter(student=user.student_profile)
         elif user.user_type == 'teacher':
@@ -141,8 +148,8 @@ def students_for_assignment(request):
 @api_view(['GET'])
 @permission_classes([permissions.IsAuthenticated])
 def view_attendance(request):
-    """View attendance records, filtered appropriately by user role."""
     user = request.user
+    tenant = get_request_tenant(request)
     subject_id = request.query_params.get('subject')
     class_id = request.query_params.get('class')
     student_id = request.query_params.get('student')
@@ -155,6 +162,9 @@ def view_attendance(request):
         'session__teacher_assignment__teacher__user',
         'student__user',
     )
+
+    if tenant:
+        qs = qs.filter(session__teacher_assignment__academic_year__tenant=tenant)
 
     if user.user_type == 'student':
         qs = qs.filter(student=user.student_profile)
@@ -184,12 +194,14 @@ def view_attendance(request):
 @api_view(['GET'])
 @permission_classes([permissions.IsAuthenticated])
 def attendance_reports(request):
-    """Aggregated attendance reports by class/subject."""
     user = request.user
+    tenant = get_request_tenant(request)
     class_id = request.query_params.get('class')
     subject_id = request.query_params.get('subject')
 
     sessions = AttendanceSession.objects.all()
+    if tenant:
+        sessions = sessions.filter(teacher_assignment__academic_year__tenant=tenant)
     if user.user_type == 'teacher':
         sessions = sessions.filter(teacher_assignment__teacher=user.teacher_profile)
     if class_id:

@@ -4,10 +4,17 @@ from accounts.models import StudentProfile, TeacherProfile
 from academic.models import Subject, Class
 
 class ExamType(models.Model):
-    name = models.CharField(max_length=50, unique=True)
+    tenant = models.ForeignKey(
+        'tenants.Tenant', on_delete=models.CASCADE,
+        null=True, blank=True, related_name='exam_types',
+    )
+    name = models.CharField(max_length=50)
     description = models.TextField(blank=True)
     weightage = models.DecimalField(max_digits=5, decimal_places=2, default=100.00)
-    
+
+    class Meta:
+        unique_together = [['tenant', 'name']]
+
     def __str__(self):
         return self.name
 

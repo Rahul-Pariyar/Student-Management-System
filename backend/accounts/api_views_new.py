@@ -26,13 +26,19 @@ from academic.models import (
 from attendance.models import AttendanceRecord, AttendanceSession
 from fees.models import StudentFee
 from examination.models import Examination
+from tenants.mixins import get_request_tenant
 
 
 # ─── Permission helpers ──────────────────────────────────────────
 
 class IsAdmin(permissions.BasePermission):
     def has_permission(self, request, view):
-        return request.user.is_authenticated and request.user.user_type == 'admin'
+        if not request.user.is_authenticated:
+            return False
+        # Super admin impersonating counts as admin
+        if request.user.user_type == 'super_admin' and hasattr(request, 'impersonated_tenant'):
+            return True
+        return request.user.user_type == 'admin'
 
 
 class IsTeacher(permissions.BasePermission):
@@ -48,6 +54,39 @@ class IsStudent(permissions.BasePermission):
 class IsParent(permissions.BasePermission):
     def has_permission(self, request, view):
         return request.user.is_authenticated and request.user.user_type == 'parent'
+
+
+def is_impersonating(request):
+    """True when a super admin is acting inside a tenant via impersonation."""
+    return (
+        request.user.is_authenticated
+        and request.user.user_type == 'super_admin'
+        and hasattr(request, 'impersonated_tenant')
+    )
+
+
+class ImpersonationReadOnly(permissions.BasePermission):
+    """
+    When a super admin is impersonating:
+      - GET requests are allowed (read-only)
+      - POST/PUT/PATCH/DELETE are blocked
+    Regular users are unaffected.
+    """
+    def has_permission(self, request, view):
+        if is_impersonating(request):
+            return request.method in permissions.SAFE_METHODS
+        return True
+
+
+class BlockImpersonation(permissions.BasePermission):
+    """
+    Completely blocks access to sensitive endpoints when impersonating.
+    Use on fees, results, submissions, messages.
+    """
+    def has_permission(self, request, view):
+        if is_impersonating(request):
+            return False
+        return True
 
 
 # ─── Auth / Profile ─────────────────────────────────────────────
@@ -98,26 +137,35 @@ def dashboard(request):
     """Role-based dashboard data."""
     user = request.user
 
-    if user.user_type == 'admin':
+    # Super admin impersonating a tenant — serve admin dashboard
+    effective_type = user.user_type
+    if user.user_type == 'super_admin' and hasattr(request, 'impersonated_tenant'):
+        effective_type = 'admin'
+
+    if effective_type == 'admin':
         return _admin_dashboard(request)
-    elif user.user_type == 'student':
+    elif effective_type == 'student':
         return _student_dashboard(request)
-    elif user.user_type == 'teacher':
+    elif effective_type == 'teacher':
         return _teacher_dashboard(request)
-    elif user.user_type == 'parent':
+    elif effective_type == 'parent':
         return _parent_dashboard(request)
 
     return Response({'detail': 'Unknown user type.'}, status=400)
 
 
 def _admin_dashboard(request):
+    tenant = getattr(request, 'impersonated_tenant', None) or request.user.tenant
+    base_users = User.objects.filter(tenant=tenant) if tenant else User.objects.all()
+    base_courses = Course.objects.filter(department__tenant=tenant) if tenant else Course.objects.all()
+
     data = {
-        'total_students': User.objects.filter(user_type='student').count(),
-        'total_teachers': User.objects.filter(user_type='teacher').count(),
-        'total_parents': User.objects.filter(user_type='parent').count(),
-        'total_courses': Course.objects.count(),
+        'total_students': base_users.filter(user_type='student').count(),
+        'total_teachers': base_users.filter(user_type='teacher').count(),
+        'total_parents': base_users.filter(user_type='parent').count(),
+        'total_courses': base_courses.count(),
         'recent_users': UserMinimalSerializer(
-            User.objects.exclude(user_type='admin').order_by('-date_joined')[:5],
+            base_users.exclude(user_type='admin').order_by('-date_joined')[:5],
             many=True
         ).data,
     }
@@ -206,7 +254,10 @@ def _teacher_dashboard(request):
     except TeacherProfile.DoesNotExist:
         return Response({'detail': 'Teacher profile not found.'}, status=404)
 
-    current_year = AcademicYear.objects.filter(is_current=True).first()
+    current_year = AcademicYear.objects.filter(is_current=True)
+    if request.user.tenant:
+        current_year = current_year.filter(tenant=request.user.tenant)
+    current_year = current_year.first()
     assignments_qs = TeacherSubjectAssignment.objects.filter(teacher=profile)
     if current_year:
         assignments_qs = assignments_qs.filter(academic_year=current_year)
@@ -307,14 +358,18 @@ def _parent_dashboard(request):
 # ─── Admin User Management ───────────────────────────────────────
 
 class UserListView(generics.ListAPIView):
-    permission_classes = [IsAdmin]
+    permission_classes = [IsAdmin, ImpersonationReadOnly]
     serializer_class = UserSerializer
     filterset_fields = ['user_type', 'is_active']
     search_fields = ['username', 'first_name', 'last_name', 'email']
     ordering_fields = ['date_joined', 'username']
 
     def get_queryset(self):
-        return User.objects.all().order_by('-date_joined')
+        tenant = get_request_tenant(self.request)
+        qs = User.objects.all().order_by('-date_joined')
+        if tenant:
+            qs = qs.filter(tenant=tenant)
+        return qs
 
 
 class UserCreateView(APIView):
@@ -324,7 +379,36 @@ class UserCreateView(APIView):
     def post(self, request):
         user_ser = UserCreateSerializer(data=request.data)
         user_ser.is_valid(raise_exception=True)
+
+        # Enforce plan limits
+        tenant = get_request_tenant(request)
+        if tenant:
+            sub = tenant.active_subscription
+            if sub:
+                plan = sub.plan
+                user_type = request.data.get('user_type')
+                if user_type == 'student' and plan.max_students > 0:
+                    current = User.objects.filter(tenant=tenant, user_type='student').count()
+                    if current >= plan.max_students:
+                        return Response(
+                            {'detail': f'Student limit reached for your plan ({plan.max_students}). Upgrade to add more.'},
+                            status=status.HTTP_403_FORBIDDEN,
+                        )
+                elif user_type == 'teacher' and plan.max_teachers > 0:
+                    current = User.objects.filter(tenant=tenant, user_type='teacher').count()
+                    if current >= plan.max_teachers:
+                        return Response(
+                            {'detail': f'Teacher limit reached for your plan ({plan.max_teachers}). Upgrade to add more.'},
+                            status=status.HTTP_403_FORBIDDEN,
+                        )
+
         user = user_ser.save()
+
+        # Assign to same tenant as the creating admin
+        tenant = get_request_tenant(request)
+        if tenant:
+            user.tenant = tenant
+            user.save(update_fields=['tenant'])
 
         profile_data = request.data.get('profile', {})
         if user.user_type == 'student':
@@ -352,15 +436,25 @@ class UserCreateView(APIView):
 class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAdmin]
     serializer_class = UserSerializer
-    queryset = User.objects.all()
     lookup_url_kwarg = 'user_id'
+
+    def get_queryset(self):
+        tenant = get_request_tenant(self.request)
+        qs = User.objects.all()
+        if tenant:
+            qs = qs.filter(tenant=tenant)
+        return qs
 
 
 class AdminResetPasswordView(APIView):
     permission_classes = [IsAdmin]
 
     def post(self, request, user_id):
-        user = generics.get_object_or_404(User, pk=user_id)
+        tenant = get_request_tenant(request)
+        qs = User.objects.all()
+        if tenant:
+            qs = qs.filter(tenant=tenant)
+        user = generics.get_object_or_404(qs, pk=user_id)
         serializer = AdminResetPasswordSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user.set_password(serializer.validated_data['new_password'])
@@ -420,20 +514,24 @@ class StudentSearchView(generics.ListAPIView):
         q = request.query_params.get('q', '').strip()
         if not q:
             return Response([])
+        tenant = get_request_tenant(request)
         students = StudentProfile.objects.filter(
             Q(user__first_name__icontains=q) |
             Q(user__last_name__icontains=q) |
             Q(user__username__icontains=q) |
             Q(student_id__icontains=q)
-        ).select_related('user')[:20]
+        ).select_related('user')
+        if tenant:
+            students = students.filter(user__tenant=tenant)
         from .serializers import StudentProfileSerializer
-        return Response(StudentProfileSerializer(students, many=True).data)
+        return Response(StudentProfileSerializer(students[:20], many=True).data)
 
 
 # ─── Messaging ───────────────────────────────────────────────────
 
 class MessageInboxView(generics.ListAPIView):
     serializer_class = MessageSerializer
+    permission_classes = [permissions.IsAuthenticated, BlockImpersonation]
 
     def get_queryset(self):
         user = self.request.user
@@ -444,6 +542,7 @@ class MessageInboxView(generics.ListAPIView):
 
 class SendMessageView(generics.CreateAPIView):
     serializer_class = MessageCreateSerializer
+    permission_classes = [permissions.IsAuthenticated, BlockImpersonation]
 
     def perform_create(self, serializer):
         serializer.save(sender=self.request.user)
@@ -503,10 +602,14 @@ class ContactTeachersView(APIView):
             enrollment = child.get_current_enrollment()
             if not enrollment:
                 continue
-            tas = TeacherSubjectAssignment.objects.filter(
+            # Only assignments within the same tenant
+            tenant = get_request_tenant(request)
+            ta_qs = TeacherSubjectAssignment.objects.filter(
                 class_assigned=enrollment.class_enrolled
             ).select_related('teacher__user', 'subject')
-            for ta in tas:
+            if tenant:
+                ta_qs = ta_qs.filter(academic_year__tenant=tenant)
+            for ta in ta_qs:
                 tid = ta.teacher.id
                 if tid not in teachers:
                     teachers[tid] = {
@@ -530,7 +633,11 @@ class ContactTeachersView(APIView):
 def teacher_dashboard_stats(request):
     """Real-time stats for teacher dashboard charts."""
     profile = request.user.teacher_profile
-    current_year = AcademicYear.objects.filter(is_current=True).first()
+    tenant = get_request_tenant(request)
+    current_year = AcademicYear.objects.filter(is_current=True)
+    if tenant:
+        current_year = current_year.filter(tenant=tenant)
+    current_year = current_year.first()
 
     tas = TeacherSubjectAssignment.objects.filter(teacher=profile)
     if current_year:

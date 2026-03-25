@@ -9,7 +9,9 @@ const api = axios.create({
 
 // Attach JWT token to every request
 api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('access_token')
+  // Use impersonation token if active, otherwise normal access token
+  const impToken = localStorage.getItem('impersonation_token')
+  const token = impToken || localStorage.getItem('access_token')
   if (token) {
     config.headers.Authorization = `Bearer ${token}`
   }
@@ -21,6 +23,13 @@ api.interceptors.response.use(
   (response) => response,
   async (error) => {
     const originalRequest = error.config
+    // If we're impersonating and get 401, just exit impersonation — don't try to refresh
+    if (error.response?.status === 401 && localStorage.getItem('impersonation_token')) {
+      localStorage.removeItem('impersonation_token')
+      localStorage.removeItem('impersonation_data')
+      window.location.href = '/super-admin/tenants'
+      return Promise.reject(error)
+    }
     if (error.response?.status === 401 && !originalRequest._retry) {
       originalRequest._retry = true
       const refresh = localStorage.getItem('refresh_token')

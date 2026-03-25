@@ -1,5 +1,7 @@
 from rest_framework import serializers
 from .models import AttendanceSession, AttendanceRecord, AttendanceSummary
+from academic.models import TeacherSubjectAssignment
+from tenants.mixins import get_request_tenant
 
 
 class AttendanceSessionSerializer(serializers.ModelSerializer):
@@ -59,10 +61,17 @@ class BulkAttendanceSerializer(serializers.Serializer):
     end_time = serializers.TimeField()
     topic_covered = serializers.CharField(required=False, allow_blank=True)
     notes = serializers.CharField(required=False, allow_blank=True)
-    records = serializers.ListField(
-        child=serializers.DictField(), min_length=1
-    )
-    # Each record: { "student": <id>, "status": "present|absent|late|excused", "remarks": "" }
+    records = serializers.ListField(child=serializers.DictField(), min_length=1)
+
+    def validate_teacher_assignment(self, value):
+        request = self.context.get('request')
+        tenant = get_request_tenant(request) if request else None
+        qs = TeacherSubjectAssignment.objects.filter(pk=value)
+        if tenant:
+            qs = qs.filter(academic_year__tenant=tenant)
+        if not qs.exists():
+            raise serializers.ValidationError("Invalid teacher assignment for this organization.")
+        return value
 
 
 class AttendanceSummarySerializer(serializers.ModelSerializer):

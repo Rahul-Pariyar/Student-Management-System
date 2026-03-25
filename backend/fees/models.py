@@ -7,7 +7,11 @@ from accounts.models import StudentProfile
 
 class FeeCategory(models.Model):
     """Admin-defined fee types (e.g. Tuition, Lab, Hostel)"""
-    name = models.CharField(max_length=100, unique=True)
+    tenant = models.ForeignKey(
+        'tenants.Tenant', on_delete=models.CASCADE,
+        null=True, blank=True, related_name='fee_categories',
+    )
+    name = models.CharField(max_length=100)
     description = models.TextField(blank=True)
     is_optional = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
@@ -16,6 +20,7 @@ class FeeCategory(models.Model):
     class Meta:
         ordering = ['name']
         verbose_name_plural = 'Fee Categories'
+        unique_together = [['tenant', 'name']]
 
     def __str__(self):
         return self.name
@@ -183,7 +188,13 @@ class FeePayment(models.Model):
     def save(self, *args, **kwargs):
         if not self.receipt_number:
             from django.utils.crypto import get_random_string
-            self.receipt_number = f"RCP-{timezone.now().strftime('%Y%m%d')}-{get_random_string(6).upper()}"
+            # Prefix with tenant slug for uniqueness across tenants
+            tenant_slug = ''
+            try:
+                tenant_slug = self.student_fee.fee_structure.academic_year.tenant.slug.upper()[:6]
+            except Exception:
+                pass
+            self.receipt_number = f"RCP-{tenant_slug}-{timezone.now().strftime('%Y%m%d')}-{get_random_string(6).upper()}"
         super().save(*args, **kwargs)
         self.student_fee.amount_paid += self.amount
         self.student_fee.payment_method = self.payment_method

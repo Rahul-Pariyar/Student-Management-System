@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from "react";
 import { Outlet, NavLink, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../../contexts/AuthContext";
+import SubscriptionBanner from "../common/SubscriptionBanner";
 import {
   LayoutDashboard,
   Users,
@@ -84,13 +85,19 @@ const navItems = {
 };
 
 export default function DashboardLayout() {
-  const { user, logout } = useAuth();
+  const { user, logout, impersonation } = useAuth();
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
   const navigate = useNavigate();
   const location=useLocation();
 
-  const items = navItems[user?.user_type] || [];
+  // When super admin is impersonating, show admin nav (minus sensitive items)
+  const effectiveType = impersonation ? 'admin' : user?.user_type;
+  const allItems = navItems[effectiveType] || [];
+  // Hide fees from impersonating super admin
+  const items = impersonation
+    ? allItems.filter(item => item.label !== 'Fees')
+    : allItems;
 
   const [expandedMenus, setExpandedMenus] = useState({ academic: true });
 
@@ -137,7 +144,7 @@ export default function DashboardLayout() {
           <h1
             className={`cursor-pointer font-bold text-[#3e70fa] transition-all duration-300 ${isCollapsed ? "text-xl" : "text-2xl"}`}
             onClick={() => {
-              navigate(`/${user?.user_type}/dashboard`);
+              navigate(`/${effectiveType}/dashboard`);
               setMobileOpen(false);
             }}
           >
@@ -277,7 +284,7 @@ export default function DashboardLayout() {
         {/* Profile & Logout */}
         <div className="border-t border-gray-100 p-3 space-y-2">
           <Link
-            to={`/${user.user_type}/profile`}
+            to={`/${effectiveType}/profile`}
             className={`flex items-center gap-3 rounded-xl bg-gray-50 transition-all duration-300 ${isCollapsed ? "justify-center p-2" : "p-3"}`}
           >
             <div className="h-9 w-9 flex-shrink-0 rounded-full bg-[#3e70fa]/10 flex items-center justify-center">
@@ -289,7 +296,7 @@ export default function DashboardLayout() {
                   {user?.full_name || user?.username}
                 </p>
                 <p className="text-[10px] text-gray-500 capitalize leading-tight">
-                  {user?.user_type}
+                  {impersonation ? `Viewing: ${impersonation.tenant_name}` : user?.user_type}
                 </p>
               </div>
             )}
@@ -320,6 +327,7 @@ export default function DashboardLayout() {
           ${isCollapsed ? "lg:ml-20" : "lg:ml-64"}`}
       >
         <div className="p-6 lg:p-10 mx-auto max-w-7xl">
+          {user?.user_type === 'admin' && <SubscriptionBanner />}
           <Outlet />
         </div>
       </main>

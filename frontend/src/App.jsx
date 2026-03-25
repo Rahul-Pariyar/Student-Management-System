@@ -2,12 +2,19 @@ import { Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider, useAuth } from './contexts/AuthContext'
 import ProtectedRoute from './components/common/ProtectedRoute'
 import DashboardLayout from './components/layouts/DashboardLayout'
+import SuperAdminLayout from './components/layouts/SuperAdminLayout'
+import ImpersonationBanner from './components/common/ImpersonationBanner'
 
 // Auth
 import Login from './pages/auth/Login'
 import NotFound from './pages/NotFound'
 import Profile from './pages/common/Profile'
 import Notifications from './pages/common/Notification'
+
+// Super Admin pages
+import SuperAdminDashboard from './pages/super_admin/Dashboard'
+import SuperAdminTenants from './pages/super_admin/Tenants'
+import SuperAdminSubscriptions from './pages/super_admin/Subscriptions'
 
 // Admin pages
 import AdminDashboard from './pages/admin/Dashboard'
@@ -49,15 +56,30 @@ function RoleDashboardRedirect() {
   const { user, loading } = useAuth()
   if (loading) return null
   if (!user) return <Navigate to="/login" replace />
+  if (user.user_type === 'super_admin') return <Navigate to="/super-admin/dashboard" replace />
   return <Navigate to={`/${user.user_type}/dashboard`} replace />
 }
 
 export default function App() {
   return (
     <AuthProvider>
+      <ImpersonationBanner />
       <Routes>
         {/* Public */}
         <Route path="/login" element={<Login />} />
+
+        {/* ── Super Admin routes ── */}
+        <Route
+          element={
+            <ProtectedRoute allowedRoles={['super_admin']}>
+              <SuperAdminLayout />
+            </ProtectedRoute>
+          }
+        >
+          <Route path="/super-admin/dashboard" element={<SuperAdminDashboard />} />
+          <Route path="/super-admin/tenants" element={<SuperAdminTenants />} />
+          <Route path="/super-admin/subscriptions" element={<SuperAdminSubscriptions />} />
+        </Route>
 
         {/* ── Admin routes ── */}
         <Route

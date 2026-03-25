@@ -1,53 +1,74 @@
 from django.db import models
 from accounts.models import StudentProfile, TeacherProfile
 
+
 class AcademicYear(models.Model):
-    year = models.CharField(max_length=20, unique=True)  # e.g., "2023-2024"
+    tenant = models.ForeignKey(
+        'tenants.Tenant', on_delete=models.CASCADE,
+        null=True, blank=True, related_name='academic_years',
+    )
+    year = models.CharField(max_length=20)
     start_date = models.DateField()
     end_date = models.DateField()
     is_current = models.BooleanField(default=False)
-    
+
+    class Meta:
+        unique_together = [['tenant', 'year']]
+
     def __str__(self):
         return self.year
-    
+
     def save(self, *args, **kwargs):
         if self.is_current:
-            # Ensure only one academic year is current
-            AcademicYear.objects.filter(is_current=True).update(is_current=False)
+            AcademicYear.objects.filter(
+                tenant=self.tenant, is_current=True
+            ).update(is_current=False)
         super().save(*args, **kwargs)
 
+
 class Department(models.Model):
-    name = models.CharField(max_length=100, unique=True)
-    code = models.CharField(max_length=10, unique=True)
+    tenant = models.ForeignKey(
+        'tenants.Tenant', on_delete=models.CASCADE,
+        null=True, blank=True, related_name='departments',
+    )
+    name = models.CharField(max_length=100)
+    code = models.CharField(max_length=10)
     description = models.TextField(blank=True)
     head_of_department = models.ForeignKey(TeacherProfile, on_delete=models.SET_NULL, null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
-    
+
+    class Meta:
+        unique_together = [['tenant', 'name'], ['tenant', 'code']]
+
     def __str__(self):
         return self.name
 
 class Course(models.Model):
     name = models.CharField(max_length=100)
-    code = models.CharField(max_length=20, unique=True)
+    code = models.CharField(max_length=20)
     department = models.ForeignKey(Department, on_delete=models.CASCADE)
     duration_years = models.PositiveIntegerField(default=4)
     description = models.TextField(blank=True)
-    
+
+    class Meta:
+        unique_together = [['department', 'code']]
+
     def __str__(self):
         return f"{self.name} ({self.code})"
 
+
 class Subject(models.Model):
     name = models.CharField(max_length=100)
-    code = models.CharField(max_length=20, unique=True)
+    code = models.CharField(max_length=20)
     course = models.ForeignKey(Course, on_delete=models.CASCADE)
     semester = models.PositiveIntegerField()
-    year = models.PositiveIntegerField()  # 1st year, 2nd year, etc.
+    year = models.PositiveIntegerField()
     credits = models.PositiveIntegerField(default=3)
     description = models.TextField(blank=True)
-    
+
     class Meta:
-        unique_together = ['code', 'course']
-    
+        unique_together = [['code', 'course']]
+
     def __str__(self):
         return f"{self.name} ({self.code}) - Year {self.year}, Sem {self.semester}"
 

@@ -5,6 +5,7 @@ from rest_framework.views import APIView
 from django.db import models, transaction
 from django.db.models import Avg
 from django_filters.rest_framework import DjangoFilterBackend
+from tenants.mixins import TenantQuerysetMixin, get_request_tenant
 
 from .models import ExamType, Examination, ExamResult, InternalComponent, InternalMark, ResultPublication
 from .serializers import (
@@ -14,12 +15,12 @@ from .serializers import (
 )
 from academic.models import StudentEnrollment, TeacherSubjectAssignment
 from fees.models import StudentFee
-from accounts.api_views_new import IsAdmin, IsTeacher, IsStudent
+from accounts.api_views_new import IsAdmin, IsTeacher, IsStudent, BlockImpersonation
 
 
 # ─── Exam Types ───────────────────────────────────────────────────
 
-class ExamTypeListCreate(generics.ListCreateAPIView):
+class ExamTypeListCreate(TenantQuerysetMixin, generics.ListCreateAPIView):
     queryset = ExamType.objects.all()
     serializer_class = ExamTypeSerializer
 
@@ -43,9 +44,13 @@ class ExaminationListCreate(generics.ListCreateAPIView):
 
     def get_queryset(self):
         user = self.request.user
+        tenant = get_request_tenant(self.request)
         qs = Examination.objects.select_related(
             'exam_type', 'subject', 'class_for', 'created_by'
         ).order_by('-exam_date')
+
+        if tenant:
+            qs = qs.filter(exam_type__tenant=tenant)
 
         if user.user_type == 'teacher':
             assigned = TeacherSubjectAssignment.objects.filter(
@@ -79,9 +84,12 @@ class ExaminationListCreate(generics.ListCreateAPIView):
 
 
 class ExaminationDetail(generics.RetrieveUpdateDestroyAPIView):
-    queryset = Examination.objects.select_related(
-        'exam_type', 'subject', 'class_for', 'created_by'
-    )
+    def get_queryset(self):
+        tenant = get_request_tenant(self.request)
+        qs = Examination.objects.select_related('exam_type', 'subject', 'class_for', 'created_by')
+        if tenant:
+            qs = qs.filter(exam_type__tenant=tenant)
+        return qs
 
     def get_serializer_class(self):
         if self.request.method in ('PUT', 'PATCH'):
@@ -100,6 +108,7 @@ class ResultListView(generics.ListAPIView):
     serializer_class = ExamResultSerializer
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ['examination', 'student', 'is_passed', 'grade']
+    permission_classes = [permissions.IsAuthenticated, BlockImpersonation]
 
     def get_queryset(self):
         user = self.request.user
@@ -175,13 +184,14 @@ class ResultListView(generics.ListAPIView):
 class ResultDetail(generics.RetrieveAPIView):
     queryset = ExamResult.objects.all()
     serializer_class = ExamResultSerializer
+    permission_classes = [permissions.IsAuthenticated, BlockImpersonation]
 
 
 # ─── Bulk Enter Results ───────────────────────────────────────────
 
 class BulkEnterResultsView(APIView):
     """Enter results for multiple students in one exam."""
-    permission_classes = [IsTeacher]
+    permission_classes = [IsTeacher, BlockImpersonation]
 
     @transaction.atomic
     def post(self, request, exam_id):
@@ -213,8 +223,11 @@ class BulkEnterResultsView(APIView):
 @api_view(['GET'])
 @permission_classes([permissions.IsAuthenticated])
 def exam_result_stats(request, exam_id):
-    """Aggregated stats for a specific exam."""
-    exam = generics.get_object_or_404(Examination, pk=exam_id)
+    tenant = get_request_tenant(request)
+    qs = Examination.objects.all()
+    if tenant:
+        qs = qs.filter(exam_type__tenant=tenant)
+    exam = generics.get_object_or_404(qs, pk=exam_id)
     results = ExamResult.objects.filter(examination=exam)
 
     total = results.count()
@@ -248,7 +261,7 @@ class InternalMarksView(APIView):
          Payload: { results: [ { student: id, marks: { component_id: value, ... }, remarks: "" } ] }
          After saving, recomputes ExamResult.marks_obtained = internal_total + external_marks.
     """
-    permission_classes = [IsTeacher]
+    permission_classes = [IsTeacher, BlockImpersonation]
 
     def get(self, request, exam_id):
         exam = generics.get_object_or_404(Examination, pk=exam_id)
@@ -304,12 +317,7 @@ class InternalMarksView(APIView):
 
 
 class ExternalMarksView(APIView):
-    """
-    POST /examination/exams/<exam_id>/external-marks/
-    Enter external marks per student. Computes final = internal_total + external.
-    Payload: { results: [ { student: id, external_marks: value, remarks: "" } ] }
-    """
-    permission_classes = [IsTeacher]
+    permission_classes = [IsTeacher, BlockImpersonation]
 
     @transaction.atomic
     def post(self, request, exam_id):
@@ -407,7 +415,12 @@ class ResultPublicationToggleView(APIView):
 
     @transaction.atomic
     def post(self, request, class_id, exam_type_id):
-        exam_type = generics.get_object_or_404(ExamType, pk=exam_type_id)
+        tenant = get_request_tenant(request)
+        # Verify exam_type belongs to this tenant
+        et_qs = ExamType.objects.all()
+        if tenant:
+            et_qs = et_qs.filter(tenant=tenant)
+        exam_type = generics.get_object_or_404(et_qs, pk=exam_type_id)
         pub, _ = ResultPublication.objects.get_or_create(
             exam_type=exam_type,
             class_for_id=class_id,

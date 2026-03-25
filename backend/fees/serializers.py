@@ -1,5 +1,31 @@
 from rest_framework import serializers
 from .models import FeeCategory, FeeComponent, FeeStructure, StudentFee, FeePayment, FeeWaiver
+from academic.models import Class, AcademicYear
+from tenants.mixins import get_request_tenant
+
+
+def _tenant_class_qs(field):
+    request = field.context.get('request')
+    if not request:
+        return Class.objects.none()
+    tenant = get_request_tenant(request)
+    return Class.objects.filter(academic_year__tenant=tenant) if tenant else Class.objects.all()
+
+
+def _tenant_year_qs(field):
+    request = field.context.get('request')
+    if not request:
+        return AcademicYear.objects.none()
+    tenant = get_request_tenant(request)
+    return AcademicYear.objects.filter(tenant=tenant) if tenant else AcademicYear.objects.all()
+
+
+def _tenant_category_qs(field):
+    request = field.context.get('request')
+    if not request:
+        return FeeCategory.objects.none()
+    tenant = get_request_tenant(request)
+    return FeeCategory.objects.filter(tenant=tenant) if tenant else FeeCategory.objects.all()
 
 
 class FeeCategorySerializer(serializers.ModelSerializer):
@@ -12,10 +38,21 @@ class FeeCategorySerializer(serializers.ModelSerializer):
 class FeeComponentSerializer(serializers.ModelSerializer):
     category_name = serializers.CharField(source='category.name', read_only=True)
     is_optional = serializers.BooleanField(source='category.is_optional', read_only=True)
+    category = serializers.PrimaryKeyRelatedField(queryset=FeeCategory.objects.all())
 
     class Meta:
         model = FeeComponent
         fields = ['id', 'category', 'category_name', 'is_optional', 'amount']
+
+    def validate_category(self, value):
+        # Scope validation to the tenant at validation time (context is available here)
+        request = self.context.get('request')
+        if not request:
+            return value
+        tenant = get_request_tenant(request)
+        if tenant and value.tenant != tenant:
+            raise serializers.ValidationError("Invalid category for this organization.")
+        return value
 
 
 class FeeStructureSerializer(serializers.ModelSerializer):
@@ -25,6 +62,8 @@ class FeeStructureSerializer(serializers.ModelSerializer):
     components = FeeComponentSerializer(many=True)
     late_fee_amount = serializers.DecimalField(max_digits=10, decimal_places=2, required=False, default=0)
     late_fee_applicable_after_days = serializers.IntegerField(required=False, default=7)
+    class_assigned = serializers.PrimaryKeyRelatedField(queryset=Class.objects.none())
+    academic_year = serializers.PrimaryKeyRelatedField(queryset=AcademicYear.objects.none())
 
     class Meta:
         model = FeeStructure
@@ -34,6 +73,29 @@ class FeeStructureSerializer(serializers.ModelSerializer):
             'description', 'is_active', 'components', 'total_fee', 'created_at', 'updated_at',
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['class_assigned'].queryset = _tenant_class_qs(self.fields['class_assigned'])
+        self.fields['academic_year'].queryset = _tenant_year_qs(self.fields['academic_year'])
+
+    def validate_class_assigned(self, value):
+        request = self.context.get('request')
+        if not request:
+            return value
+        tenant = get_request_tenant(request)
+        if tenant and value.academic_year.tenant != tenant:
+            raise serializers.ValidationError("Invalid class for this organization.")
+        return value
+
+    def validate_academic_year(self, value):
+        request = self.context.get('request')
+        if not request:
+            return value
+        tenant = get_request_tenant(request)
+        if tenant and value.tenant != tenant:
+            raise serializers.ValidationError("Invalid academic year for this organization.")
+        return value
 
     def get_total_fee(self, obj):
         return float(obj.total_fee)

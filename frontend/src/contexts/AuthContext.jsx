@@ -7,6 +7,10 @@ const AuthContext = createContext(null)
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [impersonation, setImpersonation] = useState(() => {
+    const stored = localStorage.getItem('impersonation_data')
+    return stored ? JSON.parse(stored) : null
+  })
   const navigate = useNavigate()
 
   // Load user from stored token on mount
@@ -43,8 +47,26 @@ export function AuthProvider({ children }) {
   const logout = () => {
     localStorage.removeItem('access_token')
     localStorage.removeItem('refresh_token')
+    localStorage.removeItem('impersonation_token')
+    localStorage.removeItem('impersonation_data')
+    setImpersonation(null)
     setUser(null)
     navigate('/login')
+  }
+
+  const startImpersonation = (tokenData) => {
+    // tokenData = { token, tenant_id, tenant_name, tenant_slug }
+    localStorage.setItem('impersonation_token', tokenData.token)
+    localStorage.setItem('impersonation_data', JSON.stringify(tokenData))
+    setImpersonation(tokenData)
+    navigate('/admin/dashboard')
+  }
+
+  const exitImpersonation = () => {
+    localStorage.removeItem('impersonation_token')
+    localStorage.removeItem('impersonation_data')
+    setImpersonation(null)
+    navigate('/super-admin/tenants')
   }
 
   const value = {
@@ -53,10 +75,14 @@ export function AuthProvider({ children }) {
     login,
     logout,
     isAuthenticated: !!user,
+    isSuperAdmin: user?.user_type === 'super_admin',
     isAdmin: user?.user_type === 'admin',
     isTeacher: user?.user_type === 'teacher',
     isStudent: user?.user_type === 'student',
     isParent: user?.user_type === 'parent',
+    impersonation,
+    startImpersonation,
+    exitImpersonation,
   }
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

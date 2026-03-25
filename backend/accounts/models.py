@@ -2,15 +2,25 @@ from django.contrib.auth.models import AbstractUser
 from django.db import models
 from django.core.validators import RegexValidator
 
+
 class User(AbstractUser):
     USER_TYPE_CHOICES = (
+        ('super_admin', 'Super Admin'),
         ('admin', 'Admin'),
         ('student', 'Student'),
         ('teacher', 'Teacher'),
         ('parent', 'Parent'),
     )
-    
-    user_type = models.CharField(max_length=10, choices=USER_TYPE_CHOICES)
+
+    user_type = models.CharField(max_length=15, choices=USER_TYPE_CHOICES)
+    # tenant is null for super_admin users
+    tenant = models.ForeignKey(
+        'tenants.Tenant',
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='users',
+    )
     phone_regex = RegexValidator(regex=r'^\+?1?\d{9,15}$', message="Phone number must be entered in the format: '+999999999'. Up to 15 digits allowed.")
     phone_number = models.CharField(validators=[phone_regex], max_length=17, blank=True)
     address = models.TextField(blank=True)
@@ -20,21 +30,44 @@ class User(AbstractUser):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    # Django's USERNAME_FIELD is still 'username' for auth
+    # Global uniqueness removed — enforced per tenant below
+    REQUIRED_FIELDS = ['email', 'user_type']
+
+    class Meta:
+        # username must be unique within a tenant (null tenant = super admins, globally unique among themselves)
+        constraints = [
+            models.UniqueConstraint(
+                fields=['username', 'tenant'],
+                name='unique_username_per_tenant',
+            ),
+            # super admins (tenant=NULL) still need unique usernames globally
+            models.UniqueConstraint(
+                fields=['username'],
+                condition=models.Q(tenant__isnull=True),
+                name='unique_username_no_tenant',
+            ),
+        ]
+
     def __str__(self):
         return f"{self.username} ({self.get_user_type_display()})"
 
 class AdminProfile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='admin_profile')
-    employee_id = models.CharField(max_length=20, unique=True)
+    employee_id = models.CharField(max_length=20)
     department = models.CharField(max_length=100)
-    
+
+    class Meta:
+        # unique per tenant via user__tenant
+        unique_together = []
+
     def __str__(self):
         return f"Admin: {self.user.get_full_name()}"
 
-    
+
 class StudentProfile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='student_profile')
-    student_id = models.CharField(max_length=20, unique=True)
+    student_id = models.CharField(max_length=20)  # unique per tenant enforced in serializer
     admission_date = models.DateField()
     guardian_name = models.CharField(max_length=100)
     guardian_phone = models.CharField(max_length=17)
@@ -70,12 +103,12 @@ class StudentProfile(models.Model):
 
 class TeacherProfile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='teacher_profile')
-    employee_id = models.CharField(max_length=20, unique=True)
+    employee_id = models.CharField(max_length=20)  # unique per tenant enforced in serializer
     qualification = models.CharField(max_length=200)
     experience_years = models.PositiveIntegerField(default=0)
     specialization = models.CharField(max_length=100)
     joining_date = models.DateField()
-    
+
     def __str__(self):
         return self.user.get_full_name() or self.user.username
 

@@ -1,5 +1,6 @@
 from django.urls import path
 from . import api_views_new as views
+from tenants.api_views import TenantSubscriptionStatusView
 
 app_name = 'accounts'
 
@@ -7,6 +8,9 @@ urlpatterns = [
     # Auth & Profile
     path('me/', views.MeView.as_view(), name='me'),
     path('change-password/', views.ChangePasswordView.as_view(), name='change_password'),
+
+    # Tenant subscription status (for org admins)
+    path('subscription-status/', TenantSubscriptionStatusView.as_view(), name='subscription_status'),
 
     # Dashboard (role-based)
     path('dashboard/', views.dashboard, name='dashboard'),

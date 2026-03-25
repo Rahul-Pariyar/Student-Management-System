@@ -1,5 +1,31 @@
 from rest_framework import serializers
 from .models import ExamType, Examination, ExamResult, InternalComponent, InternalMark
+from academic.models import Subject, Class
+from tenants.mixins import get_request_tenant
+
+
+def _tenant_subject_qs(field):
+    request = field.context.get('request')
+    if not request:
+        return Subject.objects.none()
+    tenant = get_request_tenant(request)
+    return Subject.objects.filter(course__department__tenant=tenant) if tenant else Subject.objects.all()
+
+
+def _tenant_class_qs(field):
+    request = field.context.get('request')
+    if not request:
+        return Class.objects.none()
+    tenant = get_request_tenant(request)
+    return Class.objects.filter(academic_year__tenant=tenant) if tenant else Class.objects.all()
+
+
+def _tenant_examtype_qs(field):
+    request = field.context.get('request')
+    if not request:
+        return ExamType.objects.none()
+    tenant = get_request_tenant(request)
+    return ExamType.objects.filter(tenant=tenant) if tenant else ExamType.objects.all()
 
 
 class ExamTypeSerializer(serializers.ModelSerializer):
@@ -44,12 +70,21 @@ class InternalComponentSerializer(serializers.ModelSerializer):
 
 class ExaminationCreateSerializer(serializers.ModelSerializer):
     internal_components = InternalComponentSerializer(many=True, required=False)
+    exam_type = serializers.PrimaryKeyRelatedField(queryset=ExamType.objects.none())
+    subject = serializers.PrimaryKeyRelatedField(queryset=Subject.objects.none())
+    class_for = serializers.PrimaryKeyRelatedField(queryset=Class.objects.none())
 
     class Meta:
         model = Examination
         fields = ['name', 'exam_type', 'subject', 'class_for', 'exam_date',
                   'start_time', 'end_time', 'total_marks', 'passing_marks',
                   'instructions', 'has_internal', 'internal_components']
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['exam_type'].queryset = _tenant_examtype_qs(self.fields['exam_type'])
+        self.fields['subject'].queryset = _tenant_subject_qs(self.fields['subject'])
+        self.fields['class_for'].queryset = _tenant_class_qs(self.fields['class_for'])
 
     def validate(self, attrs):
         if attrs['start_time'] >= attrs['end_time']:

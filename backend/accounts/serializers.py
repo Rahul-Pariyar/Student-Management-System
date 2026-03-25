@@ -21,14 +21,19 @@ class UserMinimalSerializer(serializers.ModelSerializer):
 class UserSerializer(serializers.ModelSerializer):
     full_name = serializers.SerializerMethodField()
     teacher_profile_id = serializers.SerializerMethodField()
+    tenant_name = serializers.CharField(source='tenant.name', read_only=True)
+
+    # Fields hidden from impersonating super admin
+    SENSITIVE_FIELDS = {'phone_number', 'address', 'date_of_birth', 'email'}
 
     class Meta:
         model = User
         fields = ['id', 'username', 'email', 'first_name', 'last_name',
                   'full_name', 'user_type', 'phone_number', 'address',
                   'date_of_birth', 'profile_picture', 'is_active',
-                  'created_at', 'updated_at', 'teacher_profile_id']
-        read_only_fields = ['id', 'created_at', 'updated_at']
+                  'created_at', 'updated_at', 'teacher_profile_id',
+                  'tenant', 'tenant_name']
+        read_only_fields = ['id', 'created_at', 'updated_at', 'tenant', 'tenant_name']
 
     def get_full_name(self, obj):
         return obj.get_full_name() or obj.username
@@ -37,6 +42,14 @@ class UserSerializer(serializers.ModelSerializer):
         if obj.user_type == 'teacher' and hasattr(obj, 'teacher_profile'):
             return obj.teacher_profile.id
         return None
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get('request')
+        if request and hasattr(request, 'impersonated_tenant'):
+            for field in self.SENSITIVE_FIELDS:
+                data.pop(field, None)
+        return data
 
 
 class UserCreateSerializer(serializers.ModelSerializer):
@@ -48,6 +61,22 @@ class UserCreateSerializer(serializers.ModelSerializer):
         fields = ['username', 'email', 'first_name', 'last_name',
                   'user_type', 'phone_number', 'address', 'date_of_birth',
                   'profile_picture', 'password', 'password2']
+
+    def validate_username(self, value):
+        # Check uniqueness within the tenant (request context set by the view)
+        request = self.context.get('request')
+        if request:
+            from tenants.mixins import get_request_tenant
+            tenant = get_request_tenant(request)
+            qs = User.objects.filter(username=value, tenant=tenant)
+            # Exclude current instance on update
+            if self.instance:
+                qs = qs.exclude(pk=self.instance.pk)
+            if qs.exists():
+                raise serializers.ValidationError(
+                    "A user with this username already exists in your organization."
+                )
+        return value
 
     def validate(self, attrs):
         if attrs['password'] != attrs.pop('password2'):

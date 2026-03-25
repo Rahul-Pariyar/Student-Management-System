@@ -121,6 +121,7 @@ from .serializers import (
 )
 from accounts.models import User
 from accounts.api_views_new import IsAdmin
+from tenants.mixins import get_request_tenant
 
 
 # ─── Notifications ────────────────────────────────────────────────
@@ -132,7 +133,8 @@ class NotificationListView(generics.ListAPIView):
     def get_queryset(self):
         user = self.request.user
         return Notification.objects.filter(
-            recipients=user
+            recipients=user,
+            tenant=user.tenant,
         ).order_by('-created_at')
 
     def get_serializer_context(self):
@@ -159,23 +161,25 @@ class NotificationCreateView(APIView):
             priority=data['priority'],
             send_email=data.get('send_email', False),
             sender=request.user,
+            tenant=get_request_tenant(request),
         )
 
-        # Resolve recipients
+        # Resolve recipients — scoped to same tenant
         if data.get('recipient_group'):
             group = data['recipient_group']
+            base = User.objects.filter(tenant=get_request_tenant(request))
             if group == 'all_students':
-                recipients = User.objects.filter(user_type='student')
+                recipients = base.filter(user_type='student')
             elif group == 'all_teachers':
-                recipients = User.objects.filter(user_type='teacher')
+                recipients = base.filter(user_type='teacher')
             elif group == 'all_parents':
-                recipients = User.objects.filter(user_type='parent')
+                recipients = base.filter(user_type='parent')
             else:
-                recipients = User.objects.exclude(user_type='admin')
+                recipients = base.exclude(user_type='admin')
             notification.recipients.set(recipients)
         elif data.get('recipient_ids'):
             notification.recipients.set(
-                User.objects.filter(id__in=data['recipient_ids'])
+                User.objects.filter(id__in=data['recipient_ids'], tenant=get_request_tenant(request))
             )
 
         return Response(

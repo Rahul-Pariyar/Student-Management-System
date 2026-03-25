@@ -5,6 +5,8 @@ from .models import (
     Assignment, AssignmentSubmission,
 )
 from accounts.serializers import UserMinimalSerializer, StudentProfileSerializer, TeacherProfileSerializer
+from accounts.models import TeacherProfile, StudentProfile
+from tenants.mixins import get_request_tenant
 
 
 # ─── Academic Year ────────────────────────────────────────────────
@@ -20,11 +22,26 @@ class AcademicYearSerializer(serializers.ModelSerializer):
 class DepartmentSerializer(serializers.ModelSerializer):
     hod_name = serializers.SerializerMethodField()
     course_count = serializers.SerializerMethodField()
+    head_of_department = serializers.PrimaryKeyRelatedField(
+        queryset=TeacherProfile.objects.all(),
+        allow_null=True, required=False,
+    )
 
     class Meta:
         model = Department
         fields = ['id', 'name', 'code', 'description',
                   'head_of_department', 'hod_name', 'course_count', 'created_at']
+
+    def validate_head_of_department(self, value):
+        if value is None:
+            return value
+        request = self.context.get('request')
+        if not request:
+            return value
+        tenant = get_request_tenant(request)
+        if tenant and value.user.tenant != tenant:
+            raise serializers.ValidationError("Invalid teacher for this organization.")
+        return value
 
     def get_hod_name(self, obj):
         return str(obj.head_of_department) if obj.head_of_department else None
@@ -70,12 +87,27 @@ class ClassSerializer(serializers.ModelSerializer):
     academic_year_label = serializers.CharField(source='academic_year.year', read_only=True)
     class_teacher_name = serializers.SerializerMethodField()
     student_count = serializers.SerializerMethodField()
+    class_teacher = serializers.PrimaryKeyRelatedField(
+        queryset=TeacherProfile.objects.all(),
+        allow_null=True, required=False,
+    )
 
     class Meta:
         model = Class
         fields = ['id', 'name', 'course', 'course_name', 'year', 'semester',
                   'section', 'academic_year', 'academic_year_label',
                   'class_teacher', 'class_teacher_name', 'student_count']
+
+    def validate_class_teacher(self, value):
+        if value is None:
+            return value
+        request = self.context.get('request')
+        if not request:
+            return value
+        tenant = get_request_tenant(request)
+        if tenant and value.user.tenant != tenant:
+            raise serializers.ValidationError("Invalid teacher for this organization.")
+        return value
 
     def get_class_teacher_name(self, obj):
         return str(obj.class_teacher) if obj.class_teacher else None
@@ -108,11 +140,21 @@ class ClassDetailSerializer(ClassSerializer):
 class StudentEnrollmentSerializer(serializers.ModelSerializer):
     student_name = serializers.SerializerMethodField()
     class_name = serializers.CharField(source='class_enrolled.__str__', read_only=True)
+    student = serializers.PrimaryKeyRelatedField(queryset=StudentProfile.objects.all())
 
     class Meta:
         model = StudentEnrollment
         fields = ['id', 'student', 'student_name', 'class_enrolled',
                   'class_name', 'enrollment_date', 'is_active']
+
+    def validate_student(self, value):
+        request = self.context.get('request')
+        if not request:
+            return value
+        tenant = get_request_tenant(request)
+        if tenant and value.user.tenant != tenant:
+            raise serializers.ValidationError("Invalid student for this organization.")
+        return value
 
     def get_student_name(self, obj):
         return str(obj.student)
@@ -124,11 +166,21 @@ class TeacherSubjectAssignmentSerializer(serializers.ModelSerializer):
     teacher_name = serializers.SerializerMethodField()
     subject_name = serializers.CharField(source='subject.name', read_only=True)
     class_name = serializers.CharField(source='class_assigned.__str__', read_only=True)
+    teacher = serializers.PrimaryKeyRelatedField(queryset=TeacherProfile.objects.all())
 
     class Meta:
         model = TeacherSubjectAssignment
         fields = ['id', 'teacher', 'teacher_name', 'subject', 'subject_name',
                   'class_assigned', 'class_name', 'academic_year']
+
+    def validate_teacher(self, value):
+        request = self.context.get('request')
+        if not request:
+            return value
+        tenant = get_request_tenant(request)
+        if tenant and value.user.tenant != tenant:
+            raise serializers.ValidationError("Invalid teacher for this organization.")
+        return value
 
     def get_teacher_name(self, obj):
         return str(obj.teacher)

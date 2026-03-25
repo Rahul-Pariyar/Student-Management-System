@@ -7,6 +7,8 @@ from django.db.models import Count, Q
 from django.utils import timezone
 
 from attendance.models import AttendanceRecord
+from tenants.mixins import TenantQuerysetMixin
+from tenants.mixins import get_request_tenant
 
 from .models import (
     AcademicYear, Department, Course, Subject, Class,
@@ -27,7 +29,7 @@ from accounts.api_views_new import IsAdmin, IsTeacher, IsStudent
 
 # ─── Academic Year ────────────────────────────────────────────────
 
-class AcademicYearListCreate(generics.ListCreateAPIView):
+class AcademicYearListCreate(TenantQuerysetMixin, generics.ListCreateAPIView):
     queryset = AcademicYear.objects.all().order_by('-start_date')
     serializer_class = AcademicYearSerializer
 
@@ -37,7 +39,7 @@ class AcademicYearListCreate(generics.ListCreateAPIView):
         return [permissions.IsAuthenticated()]
 
 
-class AcademicYearDetail(generics.RetrieveUpdateDestroyAPIView):
+class AcademicYearDetail(TenantQuerysetMixin, generics.RetrieveUpdateDestroyAPIView):
     queryset = AcademicYear.objects.all()
     serializer_class = AcademicYearSerializer
     permission_classes = [IsAdmin]
@@ -45,7 +47,7 @@ class AcademicYearDetail(generics.RetrieveUpdateDestroyAPIView):
 
 # ─── Department ───────────────────────────────────────────────────
 
-class DepartmentListCreate(generics.ListCreateAPIView):
+class DepartmentListCreate(TenantQuerysetMixin, generics.ListCreateAPIView):
     queryset = Department.objects.all().order_by('name')
     serializer_class = DepartmentSerializer
 
@@ -55,7 +57,7 @@ class DepartmentListCreate(generics.ListCreateAPIView):
         return [permissions.IsAuthenticated()]
 
 
-class DepartmentDetail(generics.RetrieveUpdateDestroyAPIView):
+class DepartmentDetail(TenantQuerysetMixin, generics.RetrieveUpdateDestroyAPIView):
     queryset = Department.objects.all()
     serializer_class = DepartmentSerializer
     permission_classes = [IsAdmin]
@@ -63,13 +65,22 @@ class DepartmentDetail(generics.RetrieveUpdateDestroyAPIView):
 
 # ─── Course ───────────────────────────────────────────────────────
 
-class CourseListCreate(generics.ListCreateAPIView):
+class CourseListCreate(TenantQuerysetMixin, generics.ListCreateAPIView):
     serializer_class = CourseSerializer
     filterset_fields = ['department']
     search_fields = ['name', 'code']
+    tenant_field = 'department__tenant'
 
     def get_queryset(self):
-        return Course.objects.select_related('department').order_by('name')
+        tenant = self.get_tenant()
+        qs = Course.objects.select_related('department').order_by('name')
+        if tenant:
+            qs = qs.filter(department__tenant=tenant)
+        return qs
+
+    def perform_create(self, serializer):
+        # Course has no direct tenant FK — tenant is inherited via department
+        serializer.save()
 
     def get_permissions(self):
         if self.request.method == 'POST':
@@ -77,21 +88,36 @@ class CourseListCreate(generics.ListCreateAPIView):
         return [permissions.IsAuthenticated()]
 
 
-class CourseDetail(generics.RetrieveUpdateDestroyAPIView):
-    queryset = Course.objects.all()
+class CourseDetail(TenantQuerysetMixin, generics.RetrieveUpdateDestroyAPIView):
     serializer_class = CourseSerializer
     permission_classes = [IsAdmin]
+    tenant_field = 'department__tenant'
+
+    def get_queryset(self):
+        tenant = self.get_tenant()
+        qs = Course.objects.all()
+        if tenant:
+            qs = qs.filter(department__tenant=tenant)
+        return qs
 
 
 # ─── Subject ──────────────────────────────────────────────────────
 
-class SubjectListCreate(generics.ListCreateAPIView):
+class SubjectListCreate(TenantQuerysetMixin, generics.ListCreateAPIView):
     serializer_class = SubjectSerializer
     filterset_fields = ['course', 'year', 'semester']
     search_fields = ['name', 'code']
+    tenant_field = 'course__department__tenant'
 
     def get_queryset(self):
-        return Subject.objects.select_related('course').order_by('course', 'year', 'semester', 'name')
+        tenant = self.get_tenant()
+        qs = Subject.objects.select_related('course').order_by('course', 'year', 'semester', 'name')
+        if tenant:
+            qs = qs.filter(course__department__tenant=tenant)
+        return qs
+
+    def perform_create(self, serializer):
+        serializer.save()  # tenant inherited via course → department
 
     def get_permissions(self):
         if self.request.method == 'POST':
@@ -99,23 +125,38 @@ class SubjectListCreate(generics.ListCreateAPIView):
         return [permissions.IsAuthenticated()]
 
 
-class SubjectDetail(generics.RetrieveUpdateDestroyAPIView):
-    queryset = Subject.objects.all()
+class SubjectDetail(TenantQuerysetMixin, generics.RetrieveUpdateDestroyAPIView):
     serializer_class = SubjectSerializer
     permission_classes = [IsAdmin]
+    tenant_field = 'course__department__tenant'
+
+    def get_queryset(self):
+        tenant = self.get_tenant()
+        qs = Subject.objects.all()
+        if tenant:
+            qs = qs.filter(course__department__tenant=tenant)
+        return qs
 
 
 # ─── Class ────────────────────────────────────────────────────────
 
-class ClassListCreate(generics.ListCreateAPIView):
+class ClassListCreate(TenantQuerysetMixin, generics.ListCreateAPIView):
     serializer_class = ClassSerializer
     filterset_fields = ['course', 'academic_year', 'year', 'semester']
     search_fields = ['name', 'section']
+    tenant_field = 'academic_year__tenant'
 
     def get_queryset(self):
-        return Class.objects.select_related(
+        tenant = self.get_tenant()
+        qs = Class.objects.select_related(
             'course', 'academic_year', 'class_teacher__user'
         ).order_by('name')
+        if tenant:
+            qs = qs.filter(academic_year__tenant=tenant)
+        return qs
+
+    def perform_create(self, serializer):
+        serializer.save()  # tenant inherited via academic_year
 
     def get_permissions(self):
         if self.request.method == 'POST':
@@ -123,10 +164,17 @@ class ClassListCreate(generics.ListCreateAPIView):
         return [permissions.IsAuthenticated()]
 
 
-class ClassDetail(generics.RetrieveUpdateDestroyAPIView):
+class ClassDetail(TenantQuerysetMixin, generics.RetrieveUpdateDestroyAPIView):
     serializer_class = ClassDetailSerializer
-    queryset = Class.objects.all()
     permission_classes = [IsAdmin]
+    tenant_field = 'academic_year__tenant'
+
+    def get_queryset(self):
+        tenant = self.get_tenant()
+        qs = Class.objects.all()
+        if tenant:
+            qs = qs.filter(academic_year__tenant=tenant)
+        return qs
 
 
 # ─── Student Enrollment ──────────────────────────────────────────
@@ -137,9 +185,12 @@ class EnrollmentListCreate(generics.ListCreateAPIView):
 
     def get_queryset(self):
         user = self.request.user
+        tenant = user.tenant
         qs = StudentEnrollment.objects.select_related(
             'student__user', 'class_enrolled__course'
         )
+        if tenant:
+            qs = qs.filter(class_enrolled__academic_year__tenant=tenant)
         if user.user_type == 'student':
             return qs.filter(student=user.student_profile)
         elif user.user_type == 'teacher':
@@ -147,7 +198,7 @@ class EnrollmentListCreate(generics.ListCreateAPIView):
                 teacher=user.teacher_profile
             ).values_list('class_assigned', flat=True)
             return qs.filter(class_enrolled__in=class_ids)
-        return qs  # admin
+        return qs
 
     def get_permissions(self):
         if self.request.method == 'POST':
@@ -166,7 +217,10 @@ class EnrollmentDetail(generics.RetrieveUpdateDestroyAPIView):
 @api_view(['GET'])
 @permission_classes([permissions.IsAuthenticated])
 def enrollment_report(request):
+    tenant = get_request_tenant(request)
     courses = Course.objects.all()
+    if tenant:
+        courses = courses.filter(department__tenant=tenant)
     report = []
     for course in courses:
         classes = Class.objects.filter(course=course)
@@ -202,9 +256,12 @@ class TeacherAssignmentListCreate(generics.ListCreateAPIView):
 
     def get_queryset(self):
         user = self.request.user
+        tenant = get_request_tenant(self.request)
         qs = TeacherSubjectAssignment.objects.select_related(
             'teacher__user', 'subject', 'class_assigned', 'academic_year'
         )
+        if tenant:
+            qs = qs.filter(academic_year__tenant=tenant)
         if user.user_type == 'teacher':
             return qs.filter(teacher=user.teacher_profile)
         return qs
@@ -234,9 +291,14 @@ class AssignmentListCreate(generics.ListCreateAPIView):
 
     def get_queryset(self):
         user = self.request.user
+        tenant = get_request_tenant(self.request)
         qs = Assignment.objects.select_related(
             'subject', 'class_assigned', 'teacher__user'
         ).order_by('-assigned_date')
+
+        # Always scope to tenant first
+        if tenant:
+            qs = qs.filter(class_assigned__academic_year__tenant=tenant)
 
         if user.user_type == 'teacher':
             return qs.filter(teacher=user.teacher_profile)
@@ -257,8 +319,14 @@ class AssignmentListCreate(generics.ListCreateAPIView):
 
 
 class AssignmentDetail(generics.RetrieveUpdateDestroyAPIView):
-    queryset = Assignment.objects.all()
     serializer_class = AssignmentSerializer
+
+    def get_queryset(self):
+        tenant = get_request_tenant(self.request)
+        qs = Assignment.objects.all()
+        if tenant:
+            qs = qs.filter(class_assigned__academic_year__tenant=tenant)
+        return qs
 
     def get_permissions(self):
         if self.request.method in ('PUT', 'PATCH', 'DELETE'):
@@ -278,9 +346,12 @@ class SubmissionListCreate(generics.ListCreateAPIView):
 
     def get_queryset(self):
         user = self.request.user
+        tenant = get_request_tenant(self.request)
         qs = AssignmentSubmission.objects.select_related(
             'assignment', 'student__user', 'graded_by__user'
         )
+        if tenant:
+            qs = qs.filter(assignment__class_assigned__academic_year__tenant=tenant)
         if user.user_type == 'student':
             return qs.filter(student=user.student_profile)
         elif user.user_type == 'teacher':
